@@ -1,0 +1,181 @@
+from mcp.server.fastmcp import FastMCP
+import os
+import json
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from difflib import SequenceMatcher
+import re
+from .server import get_memoria_path, MEMORIA_PATH
+
+mcp = FastMCP("filesystem_semantic")
+
+def similitud_texto(texto1: str, texto2: str) -> float:
+    """
+    Calcula la similitud entre dos textos usando SequenceMatcher.
+    Normaliza los textos antes de comparar.
+    """
+    # Normalizar textos: minúsculas y eliminar caracteres especiales
+    def normalizar(texto: str) -> str:
+        texto = texto.lower()
+        texto = re.sub(r'[^\w\s]', '', texto)
+        return texto
+    
+    texto1 = normalizar(texto1)
+    texto2 = normalizar(texto2)
+    
+    return SequenceMatcher(None, texto1, texto2).ratio()
+
+def extraer_palabras_clave(pregunta: str) -> List[str]:
+    """
+    Extrae palabras clave significativas de la pregunta.
+    """
+    # Palabras comunes a ignorar
+    stop_words = {
+        'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas',
+        'donde', 'cómo', 'cuando', 'qué', 'cual', 'quien',
+        'está', 'estan', 'hay', 'tiene', 'tienen', 'puede', 'pueden',
+        'para', 'por', 'con', 'sin', 'sobre', 'entre', 'desde', 'hasta',
+        'que', 'porque', 'pues', 'ya', 'más', 'menos', 'muy'
+    }
+    
+    # Normalizar y dividir en palabras
+    palabras = re.findall(r'\w+', pregunta.lower())
+    
+    # Filtrar stop words y palabras cortas
+    return [p for p in palabras if p not in stop_words and len(p) > 2]
+
+@mcp.tool()
+def sugerir_directorios(pregunta: str, ruta: Optional[str] = None) -> Dict:
+    """
+    Analiza una pregunta y sugiere los tres directorios más relevantes
+    donde podría encontrarse la información buscada.
+    
+    Args:
+        pregunta: Pregunta o consulta del usuario
+        ruta: Path opcional donde está el archivo JSON
+        
+    Returns:
+        dict: Top 3 directorios más relevantes con sus puntuaciones
+    """
+    try:
+        # Cargar estructura
+        ruta_json = get_memoria_path(ruta)
+        if not os.path.exists(ruta_json):
+            return {"error": "No existe el archivo de estructura"}
+            
+        with open(ruta_json, 'r', encoding='utf-8') as f:
+            estructura = json.load(f)
+            
+        # Extraer palabras clave de la pregunta
+        palabras_clave = extraer_palabras_clave(pregunta)
+        
+        # Lista para almacenar (directorio, puntuación)
+        puntuaciones: List[Tuple[str, str, float]] = []
+        
+        def analizar_nodo(nodo: Dict, ruta_actual: str = ""):
+            if nodo["type"] != "directory":
+                return
+                
+            descripcion = nodo.get("description", "")
+            if not descripcion:
+                return
+                
+            # Calcular puntuación basada en similitud con descripción
+            puntuacion_desc = similitud_texto(pregunta, descripcion)
+            
+            # Puntuación adicional por palabras clave encontradas
+            coincidencias = sum(1 for palabra in palabras_clave 
+                              if palabra in descripcion.lower())
+            puntuacion_keywords = coincidencias / len(palabras_clave) if palabras_clave else 0
+            
+            # Puntuación combinada (70% similitud, 30% palabras clave)
+            puntuacion_total = (puntuacion_desc * 0.7) + (puntuacion_keywords * 0.3)
+            
+            if puntuacion_total > 0.1:  # Umbral mínimo de relevancia
+                ruta_completa = os.path.join(ruta_actual, nodo["name"])
+                puntuaciones.append((
+                    ruta_completa,
+                    descripcion,
+                    puntuacion_total
+                ))
+            
+            # Analizar subdirectorios
+            for hijo in nodo.get("children", []):
+                if hijo["type"] == "directory":
+                    nueva_ruta = os.path.join(ruta_actual, nodo["name"])
+                    analizar_nodo(hijo, nueva_ruta)
+        
+        # Analizar toda la estructura
+        analizar_nodo(estructura)
+        
+        # Ordenar por puntuación y tomar los 3 mejores
+        top_directorios = sorted(puntuaciones, key=lambda x: x[2], reverse=True)[:3]
+        
+        return {
+            "sugerencias": [
+                {
+                    "ruta": ruta,
+                    "descripcion": desc,
+                    "relevancia": f"{score:.2%}"
+                }
+                for ruta, desc, score in top_directorios
+            ],
+            "palabras_clave": palabras_clave
+        }
+        
+    except Exception as e:
+        return {"error": f"Error al analizar la pregunta: {str(e)}"}
+
+@mcp.tool()
+def procesar_pregunta(pregunta: str) -> Dict:
+    """
+    Procesa una pregunta del usuario, sugiere directorios relevantes
+    y proporciona un resumen del análisis.
+    
+    Args:
+        pregunta: Pregunta o consulta del usuario
+        
+    Returns:
+        dict: Análisis completo de la pregunta y sugerencias
+    """
+    try:
+        # Obtener sugerencias de directorios
+        resultado = sugerir_directorios(pregunta)
+        if "error" in resultado:
+            return resultado
+            
+        # Preparar respuesta detallada
+        respuesta = {
+            "pregunta_original": pregunta,
+            "palabras_clave": resultado["palabras_clave"],
+            "sugerencias": resultado["sugerencias"],
+            "recomendacion": ""
+        }
+        
+        # Agregar recomendación basada en las puntuaciones
+        mejor_sugerencia = resultado["sugerencias"][0]
+        relevancia = float(mejor_sugerencia["relevancia"].rstrip('%')) / 100
+        
+        if relevancia > 0.7:
+            respuesta["recomendacion"] = (
+                f"La información que buscas muy probablemente se encuentra en "
+                f"el directorio '{mejor_sugerencia['ruta']}'"
+            )
+        elif relevancia > 0.4:
+            respuesta["recomendacion"] = (
+                f"Podrías encontrar información relacionada en los directorios sugeridos, "
+                f"especialmente en '{mejor_sugerencia['ruta']}'"
+            )
+        else:
+            respuesta["recomendacion"] = (
+                "La relación con los directorios existentes es débil. "
+                "Considera reformular tu pregunta o explorar manualmente."
+            )
+            
+        return respuesta
+        
+    except Exception as e:
+        return {"error": f"Error al procesar la pregunta: {str(e)}"}
+
+if __name__ == "__main__":
+    mcp.run() 

@@ -1,0 +1,337 @@
+from mcp.server.fastmcp import FastMCP
+import os
+import json
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
+import re
+from .server import get_memoria_path
+
+mcp = FastMCP("filesystem_search")
+
+def cargar_estructura(ruta: Optional[str] = None) -> Dict:
+    """
+    Carga la estructura desde el archivo JSON.
+    
+    Args:
+        ruta: Path opcional donde está el archivo JSON
+        
+    Returns:
+        dict: Estructura cargada o diccionario con error
+    """
+    try:
+        ruta_json = get_memoria_path(ruta)
+        if not os.path.exists(ruta_json):
+            return {"error": "No existe el archivo de estructura"}
+            
+        with open(ruta_json, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        return {"error": f"Error al cargar estructura: {str(e)}"}
+
+@mcp.tool()
+def buscar_por_nombre(patron: str, ruta: Optional[str] = None) -> Dict[str, List[Dict]]:
+    """
+    Busca elementos por nombre usando expresiones regulares.
+    
+    Args:
+        patron: Patrón regex para buscar en nombres
+        ruta: Path opcional donde está el archivo JSON
+        
+    Returns:
+        dict: Lista de elementos encontrados con sus rutas
+    """
+    try:
+        estructura = cargar_estructura(ruta)
+        if "error" in estructura:
+            return estructura
+            
+        resultados = []
+        regex = re.compile(patron, re.IGNORECASE)
+        
+        def buscar_en_nodo(nodo: Dict, ruta_actual: str = ""):
+            if regex.search(nodo["name"]):
+                resultados.append({
+                    "ruta": ruta_actual,
+                    "nombre": nodo["name"],
+                    "tipo": nodo["type"],
+                    "metadata": nodo.get("metadata", {})
+                })
+                
+            if nodo["type"] == "directory":
+                for hijo in nodo["children"]:
+                    nueva_ruta = os.path.join(ruta_actual, nodo["name"])
+                    buscar_en_nodo(hijo, nueva_ruta)
+                    
+        buscar_en_nodo(estructura)
+        return {"resultados": resultados}
+        
+    except Exception as e:
+        return {"error": f"Error en la búsqueda: {str(e)}"}
+
+@mcp.tool()
+def filtrar_por_metadata(
+    filtros: Dict[str, Any],
+    ruta: Optional[str] = None
+) -> Dict[str, List[Dict]]:
+    """
+    Filtra elementos según criterios de metadatos.
+    
+    Args:
+        filtros: Diccionario de criterios de filtrado
+            Ejemplos:
+            {
+                "tipo": "file",
+                "tamano_min": 1000,
+                "tamano_max": 5000,
+                "modificado_despues": "2024-01-01",
+                "permisos": "644"
+            }
+        ruta: Path opcional donde está el archivo JSON
+        
+    Returns:
+        dict: Lista de elementos que cumplen los criterios
+    """
+    try:
+        estructura = cargar_estructura(ruta)
+        if "error" in estructura:
+            return estructura
+            
+        resultados = []
+        
+        def cumple_filtros(nodo: Dict) -> bool:
+            metadata = nodo.get("metadata", {})
+            
+            # Filtro por tipo
+            if "tipo" in filtros and nodo["type"] != filtros["tipo"]:
+                return False
+                
+            # Filtros de tamaño
+            if "tamano_min" in filtros and metadata.get("tamano", 0) < filtros["tamano_min"]:
+                return False
+            if "tamano_max" in filtros and metadata.get("tamano", 0) > filtros["tamano_max"]:
+                return False
+                
+            # Filtros de fecha
+            if "modificado_despues" in filtros:
+                fecha_mod = datetime.fromisoformat(metadata.get("modificado", "1970-01-01"))
+                fecha_filtro = datetime.fromisoformat(filtros["modificado_despues"])
+                if fecha_mod < fecha_filtro:
+                    return False
+                    
+            # Filtro por permisos
+            if "permisos" in filtros and metadata.get("permisos") != filtros["permisos"]:
+                return False
+                
+            return True
+            
+        def buscar_en_nodo(nodo: Dict, ruta_actual: str = ""):
+            if cumple_filtros(nodo):
+                resultados.append({
+                    "ruta": ruta_actual,
+                    "nombre": nodo["name"],
+                    "tipo": nodo["type"],
+                    "metadata": nodo.get("metadata", {})
+                })
+                
+            if nodo["type"] == "directory":
+                for hijo in nodo["children"]:
+                    nueva_ruta = os.path.join(ruta_actual, nodo["name"])
+                    buscar_en_nodo(hijo, nueva_ruta)
+                    
+        buscar_en_nodo(estructura)
+        return {"resultados": resultados}
+        
+    except Exception as e:
+        return {"error": f"Error en el filtrado: {str(e)}"}
+
+@mcp.tool()
+def buscar_por_contenido(
+    patron: str,
+    extensiones: Optional[List[str]] = None,
+    ruta: Optional[str] = None
+) -> Dict[str, List[Dict]]:
+    """
+    Busca texto dentro de archivos.
+    
+    Args:
+        patron: Texto o patrón regex a buscar
+        extensiones: Lista de extensiones de archivo a buscar (ej: [".txt", ".md"])
+        ruta: Path opcional donde está el archivo JSON
+        
+    Returns:
+        dict: Lista de archivos donde se encontró el patrón
+    """
+    try:
+        estructura = cargar_estructura(ruta)
+        if "error" in estructura:
+            return estructura
+            
+        resultados = []
+        regex = re.compile(patron, re.IGNORECASE)
+        
+        def es_extension_valida(nombre: str) -> bool:
+            if not extensiones:
+                return True
+            return any(nombre.lower().endswith(ext.lower()) for ext in extensiones)
+            
+        def buscar_en_archivo(ruta_archivo: str) -> Optional[List[str]]:
+            try:
+                coincidencias = []
+                with open(ruta_archivo, 'r', encoding='utf-8') as f:
+                    for i, linea in enumerate(f, 1):
+                        if regex.search(linea):
+                            coincidencias.append({
+                                "linea": i,
+                                "texto": linea.strip()
+                            })
+                return coincidencias if coincidencias else None
+            except:
+                return None
+                
+        def buscar_en_nodo(nodo: Dict, ruta_actual: str = ""):
+            ruta_completa = os.path.join(ruta_actual, nodo["name"])
+            
+            if nodo["type"] == "file" and es_extension_valida(nodo["name"]):
+                coincidencias = buscar_en_archivo(ruta_completa)
+                if coincidencias:
+                    resultados.append({
+                        "ruta": ruta_actual,
+                        "nombre": nodo["name"],
+                        "coincidencias": coincidencias,
+                        "metadata": nodo.get("metadata", {})
+                    })
+                    
+            elif nodo["type"] == "directory":
+                for hijo in nodo["children"]:
+                    buscar_en_nodo(hijo, ruta_completa)
+                    
+        buscar_en_nodo(estructura)
+        return {"resultados": resultados}
+        
+    except Exception as e:
+        return {"error": f"Error en la búsqueda de contenido: {str(e)}"}
+
+@mcp.tool()
+def estadisticas_busqueda(
+    criterios: Dict[str, Any],
+    ruta: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Genera estadísticas sobre los elementos encontrados según criterios.
+    
+    Args:
+        criterios: Diccionario con criterios de búsqueda
+            Ejemplos:
+            {
+                "tipo": "file",
+                "extension": ".txt",
+                "fecha_inicio": "2024-01-01",
+                "fecha_fin": "2024-12-31"
+            }
+        ruta: Path opcional donde está el archivo JSON
+        
+    Returns:
+        dict: Estadísticas de los elementos encontrados
+    """
+    try:
+        estructura = cargar_estructura(ruta)
+        if "error" in estructura:
+            return estructura
+            
+        stats = {
+            "total_elementos": 0,
+            "archivos": 0,
+            "directorios": 0,
+            "tamano_total": 0,
+            "por_extension": {},
+            "por_mes": {},
+            "distribucion_tamanos": {
+                "0-1KB": 0,
+                "1KB-1MB": 0,
+                "1MB-100MB": 0,
+                "100MB+": 0
+            }
+        }
+        
+        def cumple_criterios(nodo: Dict) -> bool:
+            if "tipo" in criterios and nodo["type"] != criterios["tipo"]:
+                return False
+                
+            if "extension" in criterios and not nodo["name"].endswith(criterios["extension"]):
+                return False
+                
+            metadata = nodo.get("metadata", {})
+            if "fecha_inicio" in criterios or "fecha_fin" in criterios:
+                fecha_mod = datetime.fromisoformat(metadata.get("modificado", "1970-01-01"))
+                
+                if "fecha_inicio" in criterios:
+                    inicio = datetime.fromisoformat(criterios["fecha_inicio"])
+                    if fecha_mod < inicio:
+                        return False
+                        
+                if "fecha_fin" in criterios:
+                    fin = datetime.fromisoformat(criterios["fecha_fin"])
+                    if fecha_mod > fin:
+                        return False
+                        
+            return True
+            
+        def actualizar_stats(nodo: Dict):
+            if not cumple_criterios(nodo):
+                return
+                
+            stats["total_elementos"] += 1
+            
+            if nodo["type"] == "file":
+                stats["archivos"] += 1
+                extension = os.path.splitext(nodo["name"])[1] or "sin_extension"
+                stats["por_extension"][extension] = stats["por_extension"].get(extension, 0) + 1
+                
+                metadata = nodo.get("metadata", {})
+                tamano = metadata.get("tamano", 0)
+                stats["tamano_total"] += tamano
+                
+                # Clasificar por tamaño
+                if tamano < 1024:  # < 1KB
+                    stats["distribucion_tamanos"]["0-1KB"] += 1
+                elif tamano < 1024*1024:  # < 1MB
+                    stats["distribucion_tamanos"]["1KB-1MB"] += 1
+                elif tamano < 100*1024*1024:  # < 100MB
+                    stats["distribucion_tamanos"]["1MB-100MB"] += 1
+                else:  # >= 100MB
+                    stats["distribucion_tamanos"]["100MB+"] += 1
+                    
+                # Agrupar por mes de modificación
+                fecha_mod = datetime.fromisoformat(metadata.get("modificado", "1970-01-01"))
+                mes = fecha_mod.strftime("%Y-%m")
+                stats["por_mes"][mes] = stats["por_mes"].get(mes, 0) + 1
+                
+            else:  # directory
+                stats["directorios"] += 1
+                
+        def procesar_nodo(nodo: Dict):
+            actualizar_stats(nodo)
+            if nodo["type"] == "directory":
+                for hijo in nodo["children"]:
+                    procesar_nodo(hijo)
+                    
+        procesar_nodo(estructura)
+        
+        # Convertir tamaño total a formato legible
+        stats["tamano_total_legible"] = convertir_tamano(stats["tamano_total"])
+        
+        return stats
+        
+    except Exception as e:
+        return {"error": f"Error al generar estadísticas: {str(e)}"}
+
+def convertir_tamano(tamano: int) -> str:
+    """Convierte tamaño en bytes a formato legible."""
+    for unidad in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if tamano < 1024:
+            return f"{tamano:.1f}{unidad}"
+        tamano /= 1024
+    return f"{tamano:.1f}PB"
+
+if __name__ == "__main__":
+    mcp.run() 

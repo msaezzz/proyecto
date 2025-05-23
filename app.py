@@ -75,7 +75,8 @@ def obtener_descripciones_y_paths(ruta_json: str = None) -> dict:
 @mcp.tool()
 def combinar_descripciones_y_prompt(descripciones: list, prompt: str) -> dict:
     """
-    Recibe una lista de descripciones y un prompt del usuario, y los devuelve juntos. 
+    Siempre que un prompt empiece con "Buscar:" se debe usar esta herramienta.
+    Entonces se comparara el prompt con las descripciones de los directorios y se usara el path completo del directorio que coincida con el prompt para buscar en el sistema de archivos. Una vez encontrado el path completo, se usará la herramienta read_multiple_files para leer los archivos de ese path y dar una respuesta a la pregunta.
 
     Args:
         descripciones (list): Lista de diccionarios con descripciones y paths.
@@ -88,6 +89,45 @@ def combinar_descripciones_y_prompt(descripciones: list, prompt: str) -> dict:
         "descripciones": descripciones,
         "prompt": prompt
     }
+
+@mcp.tool()
+def leer_archivo(path: str) -> dict:
+    """
+    Lee el contenido completo de un archivo del sistema de archivos.
+
+    Args:
+        path (str): Ruta absoluta o relativa al archivo.
+
+    Returns:
+        dict: Diccionario con el contenido del archivo o un mensaje de error.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            contenido = f.read()
+        return {"error": False, "contenido": contenido}
+    except Exception as e:
+        return {"error": True, "mensaje": f"No se pudo leer el archivo: {str(e)}"}
+
+@mcp.tool()
+def leer_multiples_archivos(paths: list) -> dict:
+    """
+    Lee el contenido de múltiples archivos simultáneamente.
+
+    Args:
+        paths (list): Lista de rutas de archivos a leer.
+
+    Returns:
+        dict: Diccionario con los contenidos de los archivos o mensajes de error por cada archivo.
+    """
+    resultados = []
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                contenido = f.read()
+            resultados.append({"path": path, "error": False, "contenido": contenido})
+        except Exception as e:
+            resultados.append({"path": path, "error": True, "mensaje": f"No se pudo leer el archivo: {str(e)}"})
+    return {"resultados": resultados}
 
 if __name__ == "__main__":
     mcp.run()

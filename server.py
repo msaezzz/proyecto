@@ -8,17 +8,6 @@ import mcp.types as types
 mcp = FastMCP("filesystem_pro")
 
 
-# # Ruta global para el archivo de memoria
-MEMORIA_PATH = "/Users/msaez/Desktop/Gesco"
-MEMORIA_FILENAME = "estructura_directorios.json"
-
-# # Esquema de validación
-# ESQUEMA_NODO = {
-#     "file": ["name", "type"],
-#     "directory": ["name", "type", "description", "children"]
-# }
-
-
 @mcp.tool()
 def guardar_memoria(resultado, ruta):
     """

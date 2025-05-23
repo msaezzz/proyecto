@@ -115,5 +115,78 @@ def leer_estructura_directorios(ruta_analizar: str, force: bool = False) -> Dict
 
     return resultado
 
+@mcp.tool()
+def agregar_descripcion_repo(json_path: str, nombre_repo: str, descripcion: str) -> dict:
+    """
+    Añade o modifica la descripción de un directorio (repo) en el JSON de estructura de directorios.
+
+    Parámetros:
+    - json_path (str): Ruta al archivo JSON.
+    - nombre_repo (str): Nombre del directorio (repo) al que se le quiere añadir la descripción.
+    - descripcion (str): Descripción a añadir.
+
+    Returns:
+        dict: Resultado de la operación (éxito o error)
+    """
+    import json
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            estructura = json.load(f)
+    except Exception as e:
+        return {"error": f"No se pudo leer el archivo JSON: {str(e)}"}
+
+    def buscar_y_actualizar(nodo):
+        if nodo.get('type') == 'directory' and nodo.get('name') == nombre_repo:
+            nodo['description'] = descripcion
+            return True
+        for child in nodo.get('children', []):
+            if buscar_y_actualizar(child):
+                return True
+        return False
+
+    encontrado = buscar_y_actualizar(estructura)
+
+    if encontrado:
+        try:
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(estructura, f, ensure_ascii=False, indent=4)
+            return {"success": f"Descripción añadida/modificada para el repo '{nombre_repo}'."}
+        except Exception as e:
+            return {"error": f"No se pudo guardar el archivo JSON: {str(e)}"}
+    else:
+        return {"error": f"No se encontró el repo '{nombre_repo}' en la estructura."}
+
+@mcp.tool()
+def obtener_descripciones_directorios(json_path: str) -> dict:
+    """
+    Devuelve un diccionario con el nombre de cada directorio, su descripción y su path completo.
+
+    Parámetros:
+    - json_path (str): Ruta al archivo JSON.
+
+    Returns:
+        dict: {nombre_directorio: {"descripcion": ..., "full_path": ...}, ...}
+    """
+    import json
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            estructura = json.load(f)
+    except Exception as e:
+        return {"error": f"No se pudo leer el archivo JSON: {str(e)}"}
+
+    descripciones = {}
+
+    def recolectar(nodo):
+        if nodo.get('type') == 'directory':
+            descripciones[nodo.get('name')] = {
+                'descripcion': nodo.get('description', ''),
+                'full_path': nodo.get('full_path', '')
+            }
+            for child in nodo.get('children', []):
+                recolectar(child)
+
+    recolectar(estructura)
+    return descripciones
+
 if __name__ == "__main__":
     mcp.run()
